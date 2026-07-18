@@ -165,6 +165,10 @@ log.txt
 #
 # Scarlet-release additions
 #
+# Keep CI workflows tracked (upstream's blanket ".*" rule would ignore .github)
+!.github/
+!.github/**
+
 # Build logs
 *.log
 

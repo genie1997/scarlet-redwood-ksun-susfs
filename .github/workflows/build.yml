@@ -1,0 +1,136 @@
+name: Build kernel + publish flashable
+
+# Manual "Run workflow" button, plus any pushed tag like v6.0 / v6.0-ksun-susfs.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+# contents: write lets the built-in GITHUB_TOKEN create/update Releases (no PAT).
+permissions:
+  contents: write
+
+env:
+  # Bump this to force a fresh toolchain download; otherwise reruns reuse the cache.
+  TOOLCHAIN_TAG: "2026-07-15"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source (preserves the drivers/kernelsu symlink on Linux)
+        uses: actions/checkout@v4
+
+      - name: Compute release tag + zip name
+        id: meta
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="ci-$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "zip=scarlet-ksun-$TAG.zip" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG   ->   scarlet-ksun-$TAG.zip"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git bc bison flex libssl-dev libncurses-dev \
+            ccache libelf-dev cpio zip unzip curl wget python3 aria2 zstd \
+            device-tree-compiler
+
+      - name: Cache Neutron Clang
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchains/neutron-clang
+          key: neutron-clang-${{ env.TOOLCHAIN_TAG }}
+
+      - name: Set up Neutron Clang (only on cache miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/toolchains/neutron-clang
+          cd ~/toolchains/neutron-clang
+          curl -LSs "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" -o antman
+          chmod +x antman
+          ./antman -S
+          ./antman --patch=glibc
+
+      - name: Build kernel (build.sh)
+        run: |
+          # build.sh adds ~/toolchains/neutron-clang/bin to PATH itself and derives
+          # KERNEL_DIR from its own location, so it runs unmodified from the checkout.
+          export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
+          chmod +x build.sh
+          ./build.sh
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "::error::out/arch/arm64/boot/Image was not produced — build failed"
+            exit 1
+          fi
+          echo "Image OK: $(du -h out/arch/arm64/boot/Image | cut -f1)"
+
+      - name: Package AnyKernel3 zip
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
+          rm -rf ak3/.git
+          # redwood AnyKernel3 config: raw uncompressed Image, no ramdisk repack.
+          cat > ak3/anykernel.sh <<'EOF'
+          ### AnyKernel3 - Scarlet redwood (KSU-Next legacy + SuSFS v2.1.0)
+          properties() { '
+          kernel.string=Scarlet KSU-Next legacy + SuSFS v2.1.0 (genie1997)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=1
+          device.name1=redwood
+          device.name2=redwoodin
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          '; } # end properties
+
+          # shell variables
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          # import AnyKernel3 core
+          . tools/ak3-core.sh;
+
+          # flash raw uncompressed kernel Image only, keep the stock ramdisk (no repack)
+          split_boot;
+          flash_boot;
+          EOF
+          cp out/arch/arm64/boot/Image ak3/Image
+          ( cd ak3 && zip -r9 "../${{ steps.meta.outputs.zip }}" * -x '.git*' )
+          ls -la "${{ steps.meta.outputs.zip }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.zip }}
+          path: ${{ steps.meta.outputs.zip }}
+
+      - name: Publish Release (built-in GITHUB_TOKEN)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Scarlet KSU-Next ${{ steps.meta.outputs.tag }}
+          files: ${{ steps.meta.outputs.zip }}
+          body: |
+            Automated CI build of the Scarlet redwood kernel.
+
+            - Scarlet v6.0 base (Atom-X-Devs, GPL-2.0)
+            - KernelSU-Next v3.1.0-legacy-susfs (manual hooks)
+            - SuSFS v2.1.0
+            - UAPI-2 backport (v3.3.0 manager compatible)
+            - SET_SEPOLICY inline backport
+            - simple_lmk sysfs hide
+
+            Flash `${{ steps.meta.outputs.zip }}` in recovery (AnyKernel3).
