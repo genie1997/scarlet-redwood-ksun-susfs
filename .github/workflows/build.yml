@@ -28,11 +28,13 @@ jobs:
           if [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${{ github.ref_name }}"
           else
-            TAG="ci-$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}"
+            # Tags can't repeat; keep it a short readable date plus the run number
+            # so same-day re-runs stay unique. Title + asset name stay clean.
+            TAG="$(date -u +%Y.%m.%d).${{ github.run_number }}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "zip=scarlet-ksun-$TAG.zip" >> "$GITHUB_OUTPUT"
-          echo "Release tag: $TAG   ->   scarlet-ksun-$TAG.zip"
+          echo "zip=scarlet-ksun-susfs.zip" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG   ->   scarlet-ksun-susfs.zip"
 
       - name: Install build dependencies
         run: |
@@ -46,7 +48,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/toolchains/neutron-clang
-          key: neutron-clang-${{ env.TOOLCHAIN_TAG }}
+          key: neutron-clang-${{ env.TOOLCHAIN_TAG }}-v2
 
       - name: Set up Neutron Clang (only on cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
@@ -58,10 +60,38 @@ jobs:
           ./antman -S
           ./antman --patch=glibc
 
+      - name: Verify / repair Neutron Clang (ld.lld must work)
+        # Runs on BOTH cache-hit and cache-miss. A restored cache can be missing or
+        # have a broken ld.lld (the "ld.lld: not found" vdso failure); if so, force a
+        # fresh ./antman -S to re-download/extract a complete toolchain before building.
+        run: |
+          TC="$HOME/toolchains/neutron-clang"
+          export PATH="$TC/bin:$PATH"
+          need_fresh=0
+          "$TC/bin/ld.lld" --version >/dev/null 2>&1 || { echo "ld.lld missing/broken"; need_fresh=1; }
+          "$TC/bin/clang"  --version >/dev/null 2>&1 || { echo "clang missing/broken";  need_fresh=1; }
+          if [ "$need_fresh" = 1 ]; then
+            echo "::warning::Toolchain incomplete (bad cache restore) — re-syncing with antman"
+            mkdir -p "$TC"; cd "$TC"
+            if [ ! -x ./antman ]; then
+              curl -LSs "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" -o antman
+              chmod +x antman
+            fi
+            ./antman -S
+            ./antman --patch=glibc
+          fi
+          # Fail loudly if it is still broken after repair.
+          echo "=== toolchain check ==="
+          "$TC/bin/ld.lld" --version
+          "$TC/bin/clang"  --version | head -1
+          # Export the toolchain bin to PATH for ALL later steps and their sub-makes (vdso).
+          echo "$TC/bin" >> "$GITHUB_PATH"
+
       - name: Build kernel (build.sh)
         run: |
           # build.sh adds ~/toolchains/neutron-clang/bin to PATH itself and derives
           # KERNEL_DIR from its own location, so it runs unmodified from the checkout.
+          # (PATH is also set globally via $GITHUB_PATH in the verify step above.)
           export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
           chmod +x build.sh
           ./build.sh
@@ -122,7 +152,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
-          name: Scarlet KSU-Next ${{ steps.meta.outputs.tag }}
+          name: Scarlet KSU-Next + SuSFS
           files: ${{ steps.meta.outputs.zip }}
           body: |
             Automated CI build of the Scarlet redwood kernel.
