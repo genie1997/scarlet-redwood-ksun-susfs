@@ -94,11 +94,12 @@ jobs:
           supported.patchlevels=
           '; } # end properties
 
-          # shell variables
-          block=/dev/block/bootdevice/by-name/boot;
-          is_slot_device=1;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
+          # shell variables — MUST be UPPERCASE: ak3-core.sh reads $BLOCK / $IS_SLOT_DEVICE
+          # (no lowercase fallback; lowercase leaves $BLOCK empty -> "Invalid partition" abort)
+          BLOCK=/dev/block/bootdevice/by-name/boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
 
           # import AnyKernel3 core
           . tools/ak3-core.sh;
