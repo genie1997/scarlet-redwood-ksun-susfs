@@ -147,10 +147,13 @@ x509.genkey
 /compile_commands.json
 
 # generated defconfigs
-arch/*/configs/vendor/*_defconfig
+# NOTE: in this repo the vendor defconfigs (xiaomi-qgki_defconfig, etc.) are REAL
+# committed source needed by build.sh — the upstream "generated" rule is disabled.
+# arch/*/configs/vendor/*_defconfig
 
 # vendor device tree directories
-arch/arm/boot/dts/vendor
+# NOTE: real source in this snapshot — kept tracked.
+# arch/arm/boot/dts/vendor
 
 # build scripts
 /build-scripts
